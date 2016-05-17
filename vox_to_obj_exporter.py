@@ -1,3 +1,48 @@
+class ObjViewer:
+    """ For reading OBJ files composed of axis aligned faces """
+    def __init__(self):
+        self.vertices = []
+        self.faces = []
+    def read(self, stream):
+        """ Discards current model, loads a new one """
+        self.vertices = []
+        self.faces = []
+        uvs = []
+        normals = []
+        for line in stream:
+            # make sure there's no new line or trailing spaces
+            l = line.strip().split(' ')
+            lineType = l[0].strip()
+            data = l[1:]
+            if lineType == 'v':
+                # vertex
+                v = tuple(map(int, data))
+                self.vertices.append(v)
+            elif lineType == 'vt':
+                # uv
+                pass
+            elif lineType == 'vn':
+                # normal
+                pass
+            elif lineType == 'f':
+                # face (assume all verts/uvs/normals have been processed)
+                faceVerts = []
+                faceUvs = []
+                faceNormals = []
+                for v in data:
+                    result = v.split('/')
+                    faceVerts.append(self.vertices[result[0]])
+                    faceUvs.append(uvs[result[1]])
+                    faceNormals.append(normals[self.vertices[result[2]]])
+                self.faces.append( ObjFace(faceVerts, faceUvs, faceNormals) )
+    def optimize(self):
+        """ Combine adjacent quads into bigger quads (finds a local max) """
+        pass
+
+class ObjFace:
+    def __init__(self, verts):
+        pass
+
 class VoxelStruct:
     """ Describes a voxel object
     """
@@ -277,11 +322,19 @@ def userAborts(msg):
 if __name__ == '__main__':
     import os, os.path
     from glob import glob
-
+    
+    print('Enter an output path:')
+    u = input('> ').strip()
+    while not os.path.exists(u):
+        print('That path does not exist.')
+        print('Enter an output path:')
+        u = input('> ').strip()
+    outPath = os.path.abspath(u)
+    
     try:
         while True:
             print('Enter glob of export files (\'exit\' or blank to quit):')
-            u = input().strip()
+            u = input('> ').strip()
             if u == 'exit' or u == '':
                 break
             u = glob(u)
@@ -291,8 +344,9 @@ if __name__ == '__main__':
                 if vox is None:
                     continue
                 res = VoxelStruct(vox)
-                print('exporting VOX to OBJ...')
-                out = os.path.abspath(os.path.splitext(f)[0] + '.obj')
+                out = os.path.join(outPath,
+                              os.path.splitext(os.path.basename(f))[0] + '.obj')
+                print('exporting VOX to OBJ at path', out)
                 with open(out, mode='w') as file:
                     res.exportObj(file)
     except KeyboardInterrupt:
