@@ -1,3 +1,23 @@
+"""
+    This script is designed to export a mass amount of MagicaVoxel .vox files
+    to .obj. Unlike Magica's internal exporter, this exporter preserves the
+    voxel vertices for easy manipulating in a 3d modeling program like Blender.
+    
+    This script also has an Obj optimizer (ObjViewer). The optimizer will
+    attempt to merge adjacent same UV quads in a way that reduces vertices. This
+    feature was added to aid in manually unwrapping the model.
+    
+    Notes:
+        * ObjViewer is a misnomer, it can actually modify the file! Whoops...
+            * Great pass! Sorry! What a save! What a save!
+        * Both VoxelStruct and ObjViewer have .obj exporter code. This should
+            probably be refactored to reduce code duplication.
+        * There are a lot of floating point equality comparisons. They seem to
+            work but it scares me a little.
+"""
+from operator import itemgetter
+from functools import cmp_to_key
+
 class ObjViewer:
     """ For reading OBJ files composed of axis aligned faces """
     def __init__(self):
@@ -16,14 +36,14 @@ class ObjViewer:
             data = l[1:]
             if lineType == 'v':
                 # vertex
-                v = tuple(map(int, data))
+                v = tuple(map(float, data))
                 self.vertices.append(v)
             elif lineType == 'vt':
                 # uv
-                pass
+                uvs.append( tuple(map(float, data)) )
             elif lineType == 'vn':
                 # normal
-                pass
+                normals.append( tuple(map(float, data)) )
             elif lineType == 'f':
                 # face (assume all verts/uvs/normals have been processed)
                 faceVerts = []
@@ -31,17 +51,212 @@ class ObjViewer:
                 faceNormals = []
                 for v in data:
                     result = v.split('/')
-                    faceVerts.append(self.vertices[result[0]])
-                    faceUvs.append(uvs[result[1]])
-                    faceNormals.append(normals[self.vertices[result[2]]])
+                    # recall that everything is 1 indexed... #!@%!
+                    faceVerts.append(self.vertices[int(result[0]) - 1])
+                    if len(result) == 1:
+                        continue
+                    if result[1] != '':
+                        # uvs may not be present, ex: 'f vert//normal ...'
+                        faceUvs.append(uvs[int(result[1]) - 1])
+                    if len(result) <= 2:
+                        # don't continue if only vert and uv are present
+                        continue
+                    faceNormals.append(normals[int(result[2]) - 1])
                 self.faces.append( ObjFace(faceVerts, faceUvs, faceNormals) )
     def optimize(self):
         """ Combine adjacent quads into bigger quads (finds a local max) """
-        pass
+        self.genNormals(False)
+        # the edges combined with self.faces form an undirected graph
+        adjacencyGraphEdges = self._buildAdjacencyGraph()
+        groups = self._findGraphComponents(adjacencyGraphEdges)
+        newFaces = []
+        for group in groups:
+            newFaces.extend(self._optimizeComponent(group, adjacencyGraphEdges))
+        self._regen(newFaces)
+    def _optimizeComponent(self, comp, edges):
+        # if all faces are axis aligned, we can just splice out a coordinate and
+        # use one simple algorithm to optimize the faces
+        # recall that all faces in a component have the same UVs
+        # (see facesAreAdjacent)
+        normal = comp[0].normal
+        if abs(normal[0]) == 1:
+            # all verts have same x coordinate, so pass on (y, z)
+            faces = self._optimizeSurface(comp, edges, 1, 2)
+        elif abs(normal[1]) == 1:
+            # all verts have same y coordinate, so pass on (x, z)
+            faces = self._optimizeSurface(comp, edges, 0, 2)
+        elif abs(normal[2]) == 1:
+            # all verts have the same z coordinate, so pass on (x, y)
+            faces = self._optimizeSurface(comp, edges, 0, 1)
+        return faces
+    def _regen(self, faces):
+        self.vertices = set()
+        self.faces = faces
+        for f in self.faces:
+            self.vertices.update(f.vertices)
+        self.vertices = list(self.vertices)
+    def _optimizeSurface(self, faces, edges, xPos, yPos):
+        """ Optimize a 2d surface by breaking it into rectangles.
+            See optimizeComponent for splicing explanation. xPos and yPos
+            represent an index used to select coordintes from the vertex
+            positions, which are represented by tuples.
+        """
+        pos = itemgetter(xPos, yPos)
+        out = []
+        rectRoot = None
+        for face in faces:
+            # TODO!
+            pass
+        return faces
+    def _followStrip(self, face, edges, mask, output):
+        adjacent = set(e for e in edges if e[0] is face)
+        for f in adjacent:
+            # TODO!
+            pass
+    def _buildAdjacencyGraph(self):
+        """ Get the list of edges representing adjacent faces. """
+        # a list of edges between adjacent face tuple(face_a, face_b)
+        self.edges = []
+        # build the list of edges in the graph
+        for root in self.faces:
+            for face in self.faces:
+                if face is root:
+                    continue
+                if self.facesAreAdjacent(root, face):
+                    # the other edge will happen somewhere else in the iteration
+                    # (i.e., the relation isAdjacent is symmetric)
+                    self.edges.append((root, face))
+        return self.edges
+    def _findGraphComponents(self, edges):
+        """ Get the list of connected components from a list of graph edges.
+            The list will contain lists containing the edges of the graph.
+            
+            The result is stored in groups.
+        """
+        groups = []
+        visited = dict((f, False) for f in self.faces)
+        for face in self.faces:
+            # if the face hasn't been visited, it is not in any found components
+            if not visited[face]:
+                g = []
+                self._visitGraphNodes(face, edges, visited, g)
+                # there is only a new component if face has not been visited yet
+                groups.append(g)
+        return groups
+    def _visitGraphNodes(self, node, edges, visited, component):
+        # visit every component connected to this one
+        for edge in edges:
+            # for all x in nodes, (node, x) and (x, node) should be in edges!
+            # therefore we don't have to check for "edge[1] is node"
+            if edge[0] is node and not visited[edge[1]]:
+                assert edge[1] is not node
+                # mark the other node as visited
+                visited[edge[1]] = True
+                component.append(edge[1])
+                # visit all of that nodes connected nodes
+                self._visitGraphNodes(edge[1], edges, visited, component)
+    def facesAreAdjacent(self, a, b):
+        """ Adjacent is defined as save normal, uv, and a shared edge.
+            This isn't entirely intuitive (i.e., corner faces are not adjacent)
+            but this definition fits the problem domain.
+        """
+        # note: None is == None, this shouldn't matter
+        if a.uv != b.uv:
+            return False
+        if a.normal != b.normal:
+            return False
+        # to be adjacent, two faces must share an edge
+        # use == and not identity in case the edge split was used
+        shared = 0
+        for vert_a in a.vertices:
+            for vert_b in b.vertices:
+                if vert_a == vert_b:
+                    shared += 1
+                # hooray we have found a shared edge (or a degenerate case...)
+                if shared == 2:
+                    return True
+        return False
+    def genNormals(self, overwrite=False):
+        # compute CCW normal if it doesn't exist
+        for face in self.faces:
+            if overwrite or face.normal is None:
+                side_a = (face.vertices[1][0] - face.vertices[0][0],
+                          face.vertices[1][1] - face.vertices[0][1],
+                          face.vertices[1][2] - face.vertices[0][2])
+                side_b = (face.vertices[-1][0] - face.vertices[0][0],
+                          face.vertices[-1][1] - face.vertices[0][1],
+                          face.vertices[-1][2] - face.vertices[0][2])
+                # compute the cross product
+                face.normal = (side_a[1]*side_b[2] - side_a[2]*side_b[1],
+                               side_a[2]*side_b[0] - side_a[0]*side_b[2],
+                               side_a[0]*side_b[1] - side_a[1]*side_b[0])
+    def exportObj(self, stream):
+        # gather some of the needed information
+        normals = set()
+        uvs = set()
+        for f in self.faces:
+            if f.uv is not None:
+                uvs.add(f.uv)
+            if f.normal is not None:
+                normals.add(f.normal)
+        # convert these to lists because we need to get their index later
+        normals = list(normals)
+        uvs = list(uvs)
+        # write to the file
+        stream.write('# shivshank\'s .obj optimizer\n')
+        stream.write('\n')
+        if len(normals) > 0:
+            stream.write('# normals\n')
+            for n in normals:
+                stream.write('vn ' + ' '.join(list(map(str, n))) + '\n')
+            stream.write('\n')
+        if len(uvs) > 0:
+            stream.write('# texcoords\n')
+            for i in uvs:
+                stream.write('vt ' + ' '.join(list(map(str, i))) + '\n')
+            stream.write('\n')
+        stream.write('# verts\n')
+        for v in self.vertices:
+            stream.write('v ' + ' '.join(list(map(str, v))) + '\n')
+        stream.write('\n')
+        stream.write('# faces\n')
+        for f in self.faces:
+            # recall that OBJ files are 1 indexed
+            if f.normal is not None:
+                n = 1 + normals.index(f.normal)
+            else:
+                n = ''
+            if f.uv is not None:
+                uv = 1 + normals.index(f.uv)
+            else:
+                uv = ''
+            # this used to be a one liner ;)
+            fLine = []
+            for vert in f.vertices:
+                # I think this is going to be a speed bottleneck!
+                v = 1 + self.vertices.index(vert)
+                fLine.append(str(v) + '/' + str(uv) + '/' + str(n))
+            fLine = ' '.join(fLine)
+            stream.write('f ' + fLine + '\n')
+        stream.write('\n')
+        stream.write('\n')
 
 class ObjFace:
-    def __init__(self, verts):
-        pass
+    """ An axis aligned quad. """
+    def __init__(self, verts, uvs, normals):
+        self.vertices = verts
+        assert len(verts) == 4, "only quads are supported"
+        for i in normals:
+            assert normals[0] == i, "face must be axis aligned (orthogonal normals)"
+        self.normal = normals[0] if len(normals) > 0 else None
+        for i in uvs:
+            assert uvs[0] == i, "face must be axis aligned (orthogonal normals)"
+        self.uv = uvs[0] if len(uvs) > 0 else None
+        self.center = (
+            sum(i[0] for i in self.vertices)/4,
+            sum(i[1] for i in self.vertices)/4,
+            sum(i[2] for i in self.vertices)/4
+        )
 
 class VoxelStruct:
     """ Describes a voxel object
@@ -318,7 +533,7 @@ def userAborts(msg):
         return False
     
     return True
-    
+
 if __name__ == '__main__':
     import os, os.path
     from glob import glob
@@ -331,6 +546,13 @@ if __name__ == '__main__':
         u = input('> ').strip()
     outPath = os.path.abspath(u)
     
+    print('Are we optimizing? (y/n)')
+    u = input('> ').strip()
+    if u.startswith('y'):
+        optimizing = True
+    else:
+        optimizing = False
+
     try:
         while True:
             print('Enter glob of export files (\'exit\' or blank to quit):')
@@ -349,5 +571,15 @@ if __name__ == '__main__':
                 print('exporting VOX to OBJ at path', out)
                 with open(out, mode='w') as file:
                     res.exportObj(file)
+                if optimizing:
+                    print('optimizing OBJ at path', out)
+                    with open(out, mode='r') as file:
+                        opti = ObjViewer()
+                        opti.read(file)
+                    opti.optimize()
+                    print('exporting optimized OBJ to', out)
+                    with open(out, mode='w') as file:
+                        opti.exportObj(file)
+                    
     except KeyboardInterrupt:
         pass
