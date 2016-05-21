@@ -479,7 +479,8 @@ def decodeVox(path):
         if magic != b'VOX ':
             print('magic number is', magic)
             if userAborts('This does not appear to be a VOX file. Abort?'):
-                return
+                # should find (or make) a better exception type
+                raise ValueError("File reading aborted")
         # the file appears to use little endian consistent with RIFF
         version = int.from_bytes(file.read(4), byteorder='little')
         if version != 150:
@@ -490,7 +491,8 @@ def decodeVox(path):
         if mainHeader['id'] != b'MAIN':
             print('chunk id:', mainId)
             if userAborts('Did not find the main chunk. Abort?'):
-                return
+                # should find (or make) a better exception type
+                raise ValueError("File reading aborted")
         # main should be empty
         assert mainHeader['size'] == 0
         nextHeader = readChunkHeader(file)
@@ -534,7 +536,58 @@ def userAborts(msg):
     
     return True
 
-if __name__ == '__main__':
+def exportAll():
+    """ Uses a file to automatically export a bunch of files!
+        See this function for details on the what the file looks like.
+    """
+    import os, os.path
+    with open('exporter.txt', mode='r') as file:
+        # use this as a file "spec"
+        fromSource = os.path.abspath(file.readline().strip())
+        toExportDir = os.path.abspath(file.readline().strip())
+        optimizing = file.readline()
+        if optimizing.lower() == 'true':
+            optimizing = True
+        else:
+            optimizing = False
+    
+    print('exporting vox files under', fromSource)
+    print('\tto directory', toExportDir)
+    print('\toptimizing?', optimizing)
+    print()
+    
+    # export EVERYTHING (.vox) walking the directory structure
+    for p, dirs, fileList in os.walk(fromSource):
+        pathDiff = os.path.relpath(p, start=fromSource)
+        outDir = os.path.join(toExportDir, pathDiff)
+        for fileName in fileList:
+            if os.path.splitext(fileName)[1] != '.vox':
+                # only take vox files
+                print('ignored file', fileName)
+                continue
+            # read the voxel file
+            voxels = decodeVox(os.path.join(p, fileName))
+            vox = VoxelStruct(voxels)
+                # mirror the directory structure in the export folder
+            if not os.path.exists(outDir):
+                print('\tcreated directory', outDir)
+                os.makedirs(outDir)
+            # export a raw version
+            objName = os.path.splitext(fileName)[0]
+            with open(os.path.join(outDir, objName + '.obj'), mode='w') as file:
+                vox.exportObj(file)
+            if optimizing:
+                # export the optimized version
+                obj = ObjViewer()
+                with open(os.path.join(outDir, objName + '.obj'),
+                          mode='w') as file:
+                    obj.read(file)
+                obj.optimize()
+                with open(os.path.join(outDir, objName + '.opti.obj'),
+                          mode='w') as file:
+                    obj.exportObj(file)
+
+def byPrompt():
     import os, os.path
     from glob import glob
     
@@ -562,9 +615,10 @@ if __name__ == '__main__':
             u = glob(u)
             for f in u:
                 print('reading VOX file', f)
-                vox = decodeVox(f)
-                if vox is None:
-                    continue
+                try:
+                    vox = decodeVox(f)
+                except ValueError:
+                    print('\tFile reading aborted.')
                 res = VoxelStruct(vox)
                 out = os.path.join(outPath,
                               os.path.splitext(os.path.basename(f))[0] + '.obj')
@@ -580,6 +634,12 @@ if __name__ == '__main__':
                     print('exporting optimized OBJ to', out)
                     with open(out, mode='w') as file:
                         opti.exportObj(file)
-                    
     except KeyboardInterrupt:
         pass
+
+if __name__ == '__main__':
+    try:
+        exportAll()
+    except OSError:
+        byPrompt()
+    
