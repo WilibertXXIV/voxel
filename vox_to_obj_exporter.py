@@ -566,12 +566,16 @@ def exportAll():
         for fileName in fileList:
             if os.path.splitext(fileName)[1] != '.vox':
                 # only take vox files
-                print('\tignored', fileName)
+                print('ignored', fileName)
                 continue
             # read the voxel file
             with open(os.path.join(p, fileName), mode='r') as file:
-                print('\texporting', fileName)
-                vox = decodeVox(file)
+                print('exporting', fileName)
+                try:
+                    vox = importVox(file)
+                except ValueError as exc:
+                    print('aborted', fileName, str(exc))
+                    continue
             # mirror the directory structure in the export folder
             if not os.path.exists(outDir):
                 os.makedirs(outDir)
@@ -624,7 +628,7 @@ def byPrompt():
                 print('reading VOX file', f)
                 with open(f, mode='r') as file:
                     try:
-                        vox = decodeVox(file)
+                        vox = importVox(file)
                     except ValueError:
                         print('\tfile reading aborted')
                         continue
